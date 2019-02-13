@@ -13,4 +13,3 @@ npm-debug.log
 
 # compiled files
 src/*.js
-lib/*
