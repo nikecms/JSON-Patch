@@ -26,6 +26,8 @@ export interface Observer<T> {
   callback: (patches: Operation[]) => void;
 }
 
+export type ReplaceArrayPredicate = boolean | ((oldVal: any, newVal: any, path: string) => boolean);
+
 var beforeDict = new WeakMap();
 
 class Mirror {
@@ -153,7 +155,7 @@ export function observe<T>(obj: Object|Array<T>, callback?: (patches: Operation[
  */
 export function generate<T>(observer: Observer<Object>): Operation[] {
   var mirror = beforeDict.get(observer.object);
-  _generate(mirror.value, observer.object, observer.patches, "");
+  _generate(mirror.value, observer.object, observer.patches, "", null);
   if (observer.patches.length) {
     applyPatch(mirror.value, observer.patches);
   }
@@ -167,8 +169,14 @@ export function generate<T>(observer: Observer<Object>): Operation[] {
   return temp;
 }
 
+function checkArrayPredicate(oldVal, newVal, path: string, replaceArrayPredicate: ReplaceArrayPredicate): boolean {
+  if (typeof replaceArrayPredicate !== "function") return replaceArrayPredicate || false;
+
+  return replaceArrayPredicate(oldVal, newVal, path);
+}
+
 // Dirty check if obj is different from mirror, generate patches and update mirror
-function _generate(mirror, obj, patches, path) {
+function _generate(mirror, obj, patches, path: string, replaceArrayPredicate: ReplaceArrayPredicate) {
   if (obj === mirror) {
     return;
   }
@@ -181,26 +189,31 @@ function _generate(mirror, obj, patches, path) {
   var oldKeys = _objectKeys(mirror);
   var changed = false;
   var deleted = false;
-
   //if ever "move" operation is implemented here, make sure this test runs OK: "should not generate the same patch twice (move)"
 
   for (var t = oldKeys.length - 1; t >= 0; t--) {
     var key = oldKeys[t];
+    var newPath = path + "/" + escapePathComponent(key);
     var oldVal = mirror[key];
     if (hasOwnProperty(obj, key) && !(obj[key] === undefined && oldVal !== undefined && Array.isArray(obj) === false)) {
       var newVal = obj[key];
-      if (typeof oldVal == "object" && oldVal != null && typeof newVal == "object" && newVal != null) {
-        _generate(oldVal, newVal, patches, path + "/" + escapePathComponent(key));
-      }
-      else {
+      if (Array.isArray(oldVal) && Array.isArray(newVal) && checkArrayPredicate(oldVal, newVal, newPath, replaceArrayPredicate)) {
+        var arrayPatches = [];
+        _generate(oldVal, newVal, arrayPatches, '', false);
+        if (arrayPatches.length > 0) {
+          patches.push({ op: "replace", path: newPath, value: _deepClone(newVal) });
+        }
+      } else if (typeof oldVal == "object" && oldVal != null && typeof newVal == "object" && newVal != null) {
+        _generate(oldVal, newVal, patches, newPath, replaceArrayPredicate);
+      } else {
         if (oldVal !== newVal) {
           changed = true;
-          patches.push({ op: "replace", path: path + "/" + escapePathComponent(key), value: _deepClone(newVal) });
+          patches.push({ op: "replace", path: newPath, value: _deepClone(newVal) });
         }
       }
     }
     else {
-      patches.push({ op: "remove", path: path + "/" + escapePathComponent(key) });
+      patches.push({ op: "remove", path: newPath });
       deleted = true; // property has been deleted
     }
   }
@@ -219,8 +232,8 @@ function _generate(mirror, obj, patches, path) {
 /**
  * Create an array of patches from the differences in two objects
  */
-export function compare(tree1: Object | Array<any>, tree2: Object | Array<any>): Operation[] {
+export function compare(tree1: Object | Array<any>, tree2: Object | Array<any>, replaceArrayPredicate: ReplaceArrayPredicate): Operation[] {
   var patches = [];
-  _generate(tree1, tree2, patches, '');
+  _generate(tree1, tree2, patches, '', replaceArrayPredicate);
   return patches;
 }
